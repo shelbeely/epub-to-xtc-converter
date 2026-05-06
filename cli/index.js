@@ -12,6 +12,16 @@ const { minimatch } = require('minimatch');
 const { loadSettings, resolveSettings, validateSettings, validateOptimizerSettings, generateDefaultConfig } = require('./settings');
 const { convertEpub, getOutputPath, cleanup } = require('./converter');
 const { optimizeEpub } = require('./optimizer');
+const { optimizeMarkdown } = require('./markdown');
+const { buildEpubFromMarkdownFile } = require('./md-to-epub');
+
+/** Recognised input extensions for the convert command. */
+const EPUB_EXT_RE = /\.epub$/i;
+const MD_EXT_RE = /\.(md|markdown)$/i;
+
+function isEpubPath(p) { return EPUB_EXT_RE.test(p); }
+function isMarkdownPath(p) { return MD_EXT_RE.test(p); }
+function isSupportedInput(p) { return isEpubPath(p) || isMarkdownPath(p); }
 
 program
     .name('epub-to-xtc')
@@ -20,7 +30,7 @@ program
 
 program
     .command('convert <input>')
-    .description('Convert EPUB file(s) to XTC/XTCH format')
+    .description('Convert EPUB or Markdown file(s) to XTC/XTCH format')
     .option('-o, --output <path>', 'Output file or directory')
     .option('-c, --config <path>', 'Path to settings JSON file')
     .option('-f, --format <format>', 'Output format: xtc (1-bit) or xtch (2-bit)')
@@ -54,13 +64,13 @@ program
             const stat = fs.statSync(inputPath);
 
             if (stat.isDirectory()) {
-                // Convert all EPUBs in directory
+                // Convert all EPUBs and Markdown files in directory
                 await convertDirectory(inputPath, options.output, settings);
-            } else if (stat.isFile() && inputPath.endsWith('.epub')) {
-                // Convert single file
+            } else if (stat.isFile() && isSupportedInput(inputPath)) {
+                // Convert single file (EPUB or Markdown)
                 await convertSingleFile(inputPath, options.output, settings);
             } else {
-                console.error('Input must be an EPUB file or directory containing EPUB files');
+                console.error('Input must be an EPUB or Markdown file, or a directory containing such files');
                 process.exit(1);
             }
 
@@ -156,14 +166,20 @@ async function optimizeSingleFile(inputPath, outputPath, opts) {
 }
 
 /**
- * Collect EPUB files from a directory, optionally recursive
+ * Collect input files from a directory, optionally recursive.
+ *
+ * `opts.include` may be a single glob string OR an array of globs (a file
+ * is collected if it matches any of them). `opts.exclude` works the same
+ * way for negative matching. The convert command uses an array to pick
+ * up both `*.epub` and `*.md` / `*.markdown`; the optimiser keeps using
+ * a single `*.epub` glob so its behaviour is unchanged.
  */
 function collectEpubFiles(dir, opts, basedir) {
     basedir = basedir || dir;
     let results = [];
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const include = opts.include || '*.epub';
-    const exclude = opts.exclude || null;
+    const includes = normaliseGlobs(opts.include, ['*.epub']);
+    const excludes = normaliseGlobs(opts.exclude, []);
 
     for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
@@ -172,13 +188,18 @@ function collectEpubFiles(dir, opts, basedir) {
         if (entry.isDirectory() && opts.recursive) {
             results = results.concat(collectEpubFiles(fullPath, opts, basedir));
         } else if (entry.isFile()) {
-            if (!minimatch(entry.name, include)) continue;
-            if (exclude && minimatch(entry.name, exclude)) continue;
+            if (!includes.some(g => minimatch(entry.name, g))) continue;
+            if (excludes.length && excludes.some(g => minimatch(entry.name, g))) continue;
             results.push({ absolute: fullPath, relative: relPath });
         }
     }
 
     return results;
+}
+
+function normaliseGlobs(value, fallback) {
+    if (value === null || value === undefined) return fallback;
+    return Array.isArray(value) ? value : [value];
 }
 
 async function optimizeDirectory(inputDir, outputDir, opts) {
@@ -249,7 +270,21 @@ async function convertSingleFile(inputPath, outputPath, settings) {
     const filename = path.basename(inputPath);
     console.log(`Converting: ${filename}`);
 
-    const result = await convertEpub(inputPath, outputPath, settings, (current, total) => {
+    // Markdown inputs go through the MD → EPUB stage first; the produced
+    // buffer is fed straight into convertEpub without touching disk.
+    let convertInput = inputPath;
+    if (isMarkdownPath(inputPath)) {
+        const { buffer } = await buildEpubFromMarkdownFile(inputPath, {
+            markdownOpts: settings.markdown,
+            imageOpts: {
+                maxImageWidth: settings.optimizer && settings.optimizer.maxImageWidth,
+                grayscale: !(settings.optimizer && settings.optimizer.grayscale === false)
+            }
+        });
+        convertInput = buffer;
+    }
+
+    const result = await convertEpub(convertInput, outputPath, settings, (current, total) => {
         const percent = Math.round((current / total) * 100);
         process.stdout.write(`\r  Progress: ${current}/${total} pages (${percent}%)`);
     });
@@ -260,11 +295,15 @@ async function convertSingleFile(inputPath, outputPath, settings) {
 }
 
 async function convertDirectory(inputDir, outputDir, settings) {
-    // Recursively find all EPUB files, preserving relative paths
-    const files = collectEpubFiles(inputDir, { recursive: true, include: '*.epub' }, inputDir);
+    // Recursively find all EPUB and Markdown files, preserving relative paths
+    const files = collectEpubFiles(
+        inputDir,
+        { recursive: true, include: ['*.epub', '*.md', '*.markdown'] },
+        inputDir
+    );
 
     if (files.length === 0) {
-        console.error('No EPUB files found in directory (searched recursively)');
+        console.error('No EPUB or Markdown files found in directory (searched recursively)');
         process.exit(1);
     }
 
@@ -278,7 +317,7 @@ async function convertDirectory(inputDir, outputDir, settings) {
         }
     }
 
-    console.log(`Converting ${files.length} EPUB file(s)...\n`);
+    console.log(`Converting ${files.length} file(s)...\n`);
 
     const ext = settings.output.format === 'xtch' ? '.xtch' : '.xtc';
     let successCount = 0;
@@ -294,7 +333,21 @@ async function convertDirectory(inputDir, outputDir, settings) {
         console.log(`[${i + 1}/${files.length}] ${file.relative}`);
 
         try {
-            const result = await convertEpub(file.absolute, outputPath, settings, (current, total) => {
+            // Markdown files take a detour through md-to-epub before
+            // entering the renderer; EPUBs go straight in.
+            let convertInput = file.absolute;
+            if (isMarkdownPath(file.absolute)) {
+                const { buffer } = await buildEpubFromMarkdownFile(file.absolute, {
+                    markdownOpts: settings.markdown,
+                    imageOpts: {
+                        maxImageWidth: settings.optimizer && settings.optimizer.maxImageWidth,
+                        grayscale: !(settings.optimizer && settings.optimizer.grayscale === false)
+                    }
+                });
+                convertInput = buffer;
+            }
+
+            const result = await convertEpub(convertInput, outputPath, settings, (current, total) => {
                 const percent = Math.round((current / total) * 100);
                 process.stdout.write(`\r  Progress: ${current}/${total} pages (${percent}%)`);
             });
@@ -310,6 +363,165 @@ async function convertDirectory(inputDir, outputDir, settings) {
     }
 
     console.log(`\nConversion complete: ${successCount} succeeded, ${failCount} failed`);
+}
+
+program
+    .command('optimize-md <input>')
+    .description('Optimize Markdown file(s) for e-paper rendering (writes optimized .md)')
+    .option('-o, --output <path>', 'Output file or directory')
+    .option('-c, --config <path>', 'Path to settings JSON file')
+    .action(async (input, options) => {
+        try {
+            const settings = loadSettings(options.config);
+            const inputPath = path.resolve(input);
+
+            if (!fs.existsSync(inputPath)) {
+                console.error(`Input not found: ${inputPath}`);
+                process.exit(1);
+            }
+
+            const stat = fs.statSync(inputPath);
+            if (stat.isDirectory()) {
+                const files = collectEpubFiles(
+                    inputPath,
+                    { recursive: true, include: ['*.md', '*.markdown'] },
+                    inputPath
+                );
+                if (files.length === 0) {
+                    console.error('No Markdown files found in directory');
+                    process.exit(1);
+                }
+                let outputDir = options.output ? path.resolve(options.output) : inputPath;
+                if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+                for (const file of files) {
+                    const inPlace = !options.output;
+                    const ext = path.extname(file.relative);
+                    const base = file.relative.slice(0, -ext.length);
+                    const outPath = inPlace
+                        ? path.join(outputDir, `${base}_optimized${ext}`)
+                        : path.join(outputDir, file.relative);
+                    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+                    optimizeMarkdownFile(file.absolute, outPath, settings.markdown);
+                    console.log(`Optimized: ${file.relative}`);
+                }
+            } else if (stat.isFile() && isMarkdownPath(inputPath)) {
+                let outPath = options.output
+                    ? path.resolve(options.output)
+                    : path.join(
+                        path.dirname(inputPath),
+                        `${path.basename(inputPath, path.extname(inputPath))}_optimized${path.extname(inputPath)}`
+                    );
+                if (fs.existsSync(outPath) && fs.statSync(outPath).isDirectory()) {
+                    outPath = path.join(outPath, path.basename(inputPath));
+                }
+                optimizeMarkdownFile(inputPath, outPath, settings.markdown);
+                console.log(`Optimized: ${outPath}`);
+            } else {
+                console.error('Input must be a Markdown (.md/.markdown) file or directory');
+                process.exit(1);
+            }
+        } catch (err) {
+            console.error(`Error: ${err.message}`);
+            process.exit(1);
+        }
+    });
+
+program
+    .command('md-to-epub <input>')
+    .description('Convert Markdown file(s) to EPUB (intermediate format used by `convert`)')
+    .option('-o, --output <path>', 'Output file or directory')
+    .option('-c, --config <path>', 'Path to settings JSON file')
+    .action(async (input, options) => {
+        try {
+            const settings = loadSettings(options.config);
+            const inputPath = path.resolve(input);
+
+            if (!fs.existsSync(inputPath)) {
+                console.error(`Input not found: ${inputPath}`);
+                process.exit(1);
+            }
+
+            const imageOpts = {
+                maxImageWidth: settings.optimizer && settings.optimizer.maxImageWidth,
+                grayscale: !(settings.optimizer && settings.optimizer.grayscale === false)
+            };
+
+            const stat = fs.statSync(inputPath);
+            if (stat.isDirectory()) {
+                const files = collectEpubFiles(
+                    inputPath,
+                    { recursive: true, include: ['*.md', '*.markdown'] },
+                    inputPath
+                );
+                if (files.length === 0) {
+                    console.error('No Markdown files found in directory');
+                    process.exit(1);
+                }
+                let outputDir = options.output ? path.resolve(options.output) : inputPath;
+                if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+                for (const file of files) {
+                    const ext = path.extname(file.relative);
+                    const base = file.relative.slice(0, -ext.length);
+                    const outPath = path.join(outputDir, base + '.epub');
+                    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+                    const { buffer } = await buildEpubFromMarkdownFile(file.absolute, {
+                        markdownOpts: settings.markdown,
+                        imageOpts
+                    });
+                    fs.writeFileSync(outPath, buffer);
+                    console.log(`Wrote: ${path.relative(outputDir, outPath)}`);
+                }
+            } else if (stat.isFile() && isMarkdownPath(inputPath)) {
+                let outPath = options.output
+                    ? path.resolve(options.output)
+                    : path.join(
+                        path.dirname(inputPath),
+                        path.basename(inputPath, path.extname(inputPath)) + '.epub'
+                    );
+                if (fs.existsSync(outPath) && fs.statSync(outPath).isDirectory()) {
+                    outPath = path.join(
+                        outPath,
+                        path.basename(inputPath, path.extname(inputPath)) + '.epub'
+                    );
+                }
+                const { buffer, title, chapters } = await buildEpubFromMarkdownFile(inputPath, {
+                    markdownOpts: settings.markdown,
+                    imageOpts
+                });
+                fs.writeFileSync(outPath, buffer);
+                console.log(`Wrote: ${outPath}`);
+                console.log(`  Title: ${title}`);
+                console.log(`  Chapters: ${chapters}`);
+            } else {
+                console.error('Input must be a Markdown (.md/.markdown) file or directory');
+                process.exit(1);
+            }
+        } catch (err) {
+            console.error(`Error: ${err.message}`);
+            process.exit(1);
+        }
+    });
+
+/**
+ * Optimize a single Markdown file and write the result. Used by `optimize-md`.
+ * Preserves frontmatter as a YAML block (if present) so downstream tools
+ * still see the metadata.
+ */
+function optimizeMarkdownFile(inputPath, outputPath, mdOpts) {
+    const src = fs.readFileSync(inputPath, 'utf8');
+    const result = optimizeMarkdown(src, mdOpts);
+
+    // Re-emit frontmatter when the source had any so users round-tripping
+    // the file don't lose metadata.
+    let out = result.content;
+    const dataKeys = result.data ? Object.keys(result.data) : [];
+    if (dataKeys.length > 0) {
+        const yaml = dataKeys
+            .map(k => `${k}: ${JSON.stringify(result.data[k])}`)
+            .join('\n');
+        out = `---\n${yaml}\n---\n\n${out}`;
+    }
+    fs.writeFileSync(outputPath, out);
 }
 
 program.parse();

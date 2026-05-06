@@ -59,6 +59,23 @@ const DEFAULT_SETTINGS = {
         recursive: true,
         include: '*.epub',
         exclude: null
+    },
+    markdown: {
+        wrapCodeAt: 58,
+        tabSize: 2,
+        flattenHeadingsAbove: 4,
+        transposeWideTables: true,
+        wideTableThreshold: 32,
+        syntaxHighlight: true,
+        highlightStyle: 'bold-italic',
+        dropEmoji: true,
+        smartTypography: true,
+        taskListGlyphs: true,
+        flattenAlerts: true,
+        stripDangerousHtml: true,
+        frontmatterAuthorField: 'author',
+        splitChaptersAt: 1,
+        injectCodeCss: true
     }
 };
 
@@ -149,6 +166,7 @@ function validateSettings(settings) {
     }
 
     validateOptimizerFields(settings, errors);
+    errors.push(...validateMarkdownSettings(settings));
 
     return errors;
 }
@@ -172,6 +190,40 @@ function validateOptimizerFields(settings, errors) {
 }
 
 /**
+ * Validate the `markdown` settings block. All checks are best-effort —
+ * unknown keys are tolerated so user configs can carry extras.
+ */
+function validateMarkdownSettings(settings) {
+    const errors = [];
+    const md = settings.markdown;
+    if (!md) return errors;
+
+    if (md.wrapCodeAt !== undefined && md.wrapCodeAt !== null &&
+        (typeof md.wrapCodeAt !== 'number' || md.wrapCodeAt < 0 || md.wrapCodeAt > 500)) {
+        errors.push('markdown.wrapCodeAt must be a number between 0 and 500');
+    }
+    if (md.tabSize !== undefined &&
+        (typeof md.tabSize !== 'number' || md.tabSize < 1 || md.tabSize > 16)) {
+        errors.push('markdown.tabSize must be a number between 1 and 16');
+    }
+    if (md.flattenHeadingsAbove !== undefined &&
+        (typeof md.flattenHeadingsAbove !== 'number' ||
+         md.flattenHeadingsAbove < 1 || md.flattenHeadingsAbove > 6)) {
+        errors.push('markdown.flattenHeadingsAbove must be between 1 and 6');
+    }
+    if (md.splitChaptersAt !== undefined &&
+        (typeof md.splitChaptersAt !== 'number' ||
+         md.splitChaptersAt < 1 || md.splitChaptersAt > 6)) {
+        errors.push('markdown.splitChaptersAt must be between 1 and 6');
+    }
+    if (md.highlightStyle !== undefined &&
+        md.highlightStyle !== 'bold-italic' && md.highlightStyle !== 'none') {
+        errors.push("markdown.highlightStyle must be 'bold-italic' or 'none'");
+    }
+    return errors;
+}
+
+/**
  * Generate default config file content
  */
 function generateDefaultConfig() {
@@ -186,5 +238,6 @@ module.exports = {
     resolveSettings,
     validateSettings,
     validateOptimizerSettings,
+    validateMarkdownSettings,
     generateDefaultConfig
 };

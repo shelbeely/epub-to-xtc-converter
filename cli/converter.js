@@ -71,14 +71,19 @@ async function registerFont(fontPath) {
 }
 
 /**
- * Load EPUB file into renderer
+ * Load EPUB into renderer from either a file path or an in-memory Buffer.
+ * Accepting a Buffer lets the Markdown pipeline avoid an unnecessary disk
+ * write — `buildEpubFromMarkdown` returns a Buffer that we can hand
+ * straight to CREngine.
  */
-async function loadEpub(epubPath) {
+async function loadEpub(epubPathOrBuffer) {
     if (!renderer) {
         throw new Error('Renderer not initialized');
     }
 
-    const epubData = fs.readFileSync(epubPath);
+    const epubData = Buffer.isBuffer(epubPathOrBuffer)
+        ? epubPathOrBuffer
+        : fs.readFileSync(epubPathOrBuffer);
 
     const ptr = Module.allocateMemory(epubData.length);
     Module.HEAPU8.set(new Uint8Array(epubData), ptr);
@@ -151,9 +156,13 @@ function renderPage(pageNum) {
 }
 
 /**
- * Convert single EPUB to XTC/XTCH
+ * Convert single EPUB to XTC/XTCH.
+ *
+ * @param {string|Buffer} epubInput - Path to an EPUB file, or an in-memory
+ *        EPUB buffer (used by the Markdown pipeline so it doesn't have to
+ *        materialise an intermediate `.epub` on disk).
  */
-async function convertEpub(epubPath, outputPath, settings, progressCallback) {
+async function convertEpub(epubInput, outputPath, settings, progressCallback) {
     const { width, height, output } = settings;
     const isHQ = output.format === 'xtch';
     const bits = isHQ ? 2 : 1;
@@ -165,8 +174,8 @@ async function convertEpub(epubPath, outputPath, settings, progressCallback) {
     // Register font
     await registerFont(settings.font.path);
 
-    // Load EPUB
-    const { pageCount, info, toc } = await loadEpub(epubPath);
+    // Load EPUB (path or Buffer)
+    const { pageCount, info, toc } = await loadEpub(epubInput);
 
     if (pageCount === 0) {
         throw new Error('EPUB has no pages');
@@ -207,8 +216,11 @@ async function convertEpub(epubPath, outputPath, settings, progressCallback) {
     }
 
     // Build container
+    const fallbackTitle = Buffer.isBuffer(epubInput)
+        ? 'Document'
+        : path.basename(epubInput, '.epub');
     const metadata = {
-        title: info.title || path.basename(epubPath, '.epub'),
+        title: info.title || fallbackTitle,
         author: info.author || info.authors || ''
     };
 
@@ -225,10 +237,11 @@ async function convertEpub(epubPath, outputPath, settings, progressCallback) {
 }
 
 /**
- * Get output path for an EPUB file
+ * Get output path for an input file (EPUB or Markdown).
  */
 function getOutputPath(inputPath, outputDir, format) {
-    const basename = path.basename(inputPath, '.epub');
+    const ext = path.extname(inputPath);
+    const basename = path.basename(inputPath, ext);
     const extension = format === 'xtch' ? '.xtch' : '.xtc';
     return path.join(outputDir, basename + extension);
 }

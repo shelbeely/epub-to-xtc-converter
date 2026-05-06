@@ -16,11 +16,12 @@
 const fs = require('fs');
 const path = require('path');
 const JSZip = require('jszip');
-const sharp = require('sharp');
-
-const MAX_IMAGE_DECODE_WIDTH = 2048;
-const MAX_IMAGE_DECODE_HEIGHT = 3072;
-const MIN_IMAGE_SIZE = 20;
+const {
+    MAX_IMAGE_DECODE_WIDTH,
+    MAX_IMAGE_DECODE_HEIGHT,
+    MIN_IMAGE_SIZE,
+    processImage
+} = require('./image-utils');
 
 /**
  * Remove problematic CSS properties for e-paper rendering
@@ -158,43 +159,8 @@ function injectEpaperCss(html) {
 
 /**
  * Process image: ensure baseline JPEG, resize, grayscale, flatten alpha
+ * (delegates to ./image-utils for shared rules — see that module for details)
  */
-async function processImage(imgBuffer, maxWidth, toGrayscale) {
-    try {
-        let pipeline = sharp(imgBuffer);
-        const metadata = await pipeline.metadata();
-
-        // Skip tiny decorative images
-        if (metadata.width < MIN_IMAGE_SIZE || metadata.height < MIN_IMAGE_SIZE) {
-            return null;
-        }
-
-        // Flatten alpha to white — e-paper has no transparency
-        if (metadata.channels === 4 || metadata.hasAlpha) {
-            pipeline = pipeline.flatten({ background: { r: 255, g: 255, b: 255 } });
-        }
-
-        // Enforce device decode limits
-        const effectiveMaxWidth = Math.min(maxWidth || MAX_IMAGE_DECODE_WIDTH, MAX_IMAGE_DECODE_WIDTH);
-        if (metadata.width > effectiveMaxWidth || metadata.height > MAX_IMAGE_DECODE_HEIGHT) {
-            pipeline = pipeline.resize({
-                width: effectiveMaxWidth,
-                height: MAX_IMAGE_DECODE_HEIGHT,
-                fit: 'inside',
-                withoutEnlargement: true
-            });
-        }
-
-        if (toGrayscale) {
-            pipeline = pipeline.grayscale();
-        }
-
-        // Always output baseline JPEG — device doesn't support progressive
-        return await pipeline.jpeg({ quality: 85, progressive: false }).toBuffer();
-    } catch {
-        return null;
-    }
-}
 
 /**
  * Optimize an EPUB file
