@@ -24,6 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const JSZip = require('jszip');
 const { processImage } = require('./image-utils');
 const {
@@ -248,7 +249,9 @@ async function buildEpubFromMarkdown(args) {
         (optimised.data && (optimised.data.language || optimised.data.lang)) || 'en';
     const identifier =
         (optimised.data && optimised.data.identifier) ||
-        `urn:uuid:md-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        // Use a real UUID so EPUB readers that index by dc:identifier
+        // (and our own tests) can rely on global uniqueness.
+        `urn:uuid:${crypto.randomUUID()}`;
 
     // ---- images ----
     const imgOpts = imageOpts || {};

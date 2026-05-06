@@ -242,34 +242,55 @@ function setupDropZone() {
 }
 
 function handleFiles(files) {
-    const epubFiles = Array.from(files).filter(function(f) {
-        return f.name.endsWith('.epub');
+    const arr = Array.from(files);
+    const supported = arr.filter(function(f) {
+        return /\.(epub|md|markdown)$/i.test(f.name);
     });
-    if (epubFiles.length === 0) {
-        alert('Please select EPUB files');
+    if (supported.length === 0) {
+        alert('Please select EPUB or Markdown (.md) files');
         return;
     }
 
-    for (var i = 0; i < epubFiles.length; i++) {
-        var file = epubFiles[i];
-        var exists = loadedFiles.some(function(f) {
-            return f.name === file.name;
-        });
-        if (!exists) {
-            loadedFiles.push({ file: file, name: file.name, loaded: false });
+    // Convert any Markdown inputs to in-memory EPUB blobs first so the
+    // rest of the loader doesn't need to know they exist. This mirrors
+    // the CLI's `convert` flow which routes `.md` through md-to-epub
+    // before calling convertEpub.
+    var pending = supported.map(function(file) {
+        if (/\.(md|markdown)$/i.test(file.name)) {
+            if (!window.MarkdownToEpub) {
+                console.error('MarkdownToEpub script not loaded');
+                return Promise.resolve(null);
+            }
+            return window.MarkdownToEpub.mdFileToEpubFile(file).catch(function(err) {
+                console.error('Failed to convert Markdown to EPUB:', err);
+                alert('Could not convert ' + file.name + ': ' + err.message);
+                return null;
+            });
         }
-    }
+        return Promise.resolve(file);
+    });
 
-    updateFileList();
+    Promise.all(pending).then(function(converted) {
+        var added = false;
+        for (var i = 0; i < converted.length; i++) {
+            var file = converted[i];
+            if (!file) continue;
+            var exists = loadedFiles.some(function(f) { return f.name === file.name; });
+            if (!exists) {
+                loadedFiles.push({ file: file, name: file.name, loaded: false });
+                added = true;
+            }
+        }
 
-    // Auto-load first file if none loaded
-    var anyLoaded = loadedFiles.some(function(f) { return f.loaded; });
-    if (loadedFiles.length > 0 && !anyLoaded) {
-        switchToFile(0);
-    }
+        updateFileList();
 
-    // Show export all button if multiple files
-    exportAllBtn.style.display = loadedFiles.length > 1 ? 'inline-block' : 'none';
+        var anyLoaded = loadedFiles.some(function(f) { return f.loaded; });
+        if (loadedFiles.length > 0 && !anyLoaded) {
+            switchToFile(0);
+        }
+
+        exportAllBtn.style.display = loadedFiles.length > 1 ? 'inline-block' : 'none';
+    });
 }
 
 function updateFileList() {

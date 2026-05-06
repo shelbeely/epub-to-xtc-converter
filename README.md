@@ -1,6 +1,6 @@
-# EPUB to XTC Converter & Optimizer
+# EPUB / Markdown to XTC Converter & Optimizer
 
-A tool for converting EPUB files to XTC/XTCH format and optimizing EPUBs for e-ink readers. Available as a browser-based web app and Node.js CLI.
+A tool for converting EPUB and Markdown files to XTC/XTCH format and optimizing EPUBs for e-ink readers. Available as a browser-based web app and Node.js CLI. Markdown support is geared toward developer/code documentation on the Xteink X4 (480×800).
 
 **[Live Demo](https://liashkov.site/epub-to-xtc-converter/)**
 
@@ -10,6 +10,22 @@ A tool for converting EPUB files to XTC/XTCH format and optimizing EPUBs for e-i
 - Convert EPUB books to Xteink's native XTC (1-bit) or XTCH (2-bit grayscale) format
 - Uses CREngine WASM for accurate rendering (same as CoolReader)
 - Batch processing - convert multiple files at once
+
+### Markdown to XTC/XTCH (developer docs)
+- Convert `.md` / `.markdown` files (e.g. README, API references, code snippets) to XTC/XTCH
+- Markdown is normalised by a dedicated optimizer before being rendered:
+  - Long code lines wrapped at the configured column on word/operator boundaries (never mid-token)
+  - Tabs expanded, smart quotes/dashes/ellipsis normalised to ASCII
+  - GitHub `[!NOTE]` / `[!WARNING]` alerts flattened to bold-prefixed quotes
+  - `- [ ]` / `- [x]` task items rewritten to ☐/☑ glyphs
+  - Wide tables transposed to definition-list form (Xteink can't horizontal-scroll)
+  - Headings deeper than `flattenHeadingsAbove` collapsed to bold paragraphs
+  - YAML frontmatter parsed for title/author (malformed YAML tolerated)
+  - Dangerous/unrenderable HTML (`<script>`, `<iframe>`, `<details>`, …) stripped
+  - Optional emoji removal (no colour glyphs on e-ink)
+- Syntax highlighting via `highlight.js` rendered in **monochrome** (`<b>`/`<i>`/`<u>` instead of colour spans)
+- Pipeline: Markdown → optimised HTML → in-memory EPUB → existing XTC/XTCH encoder
+  (CREngine WASM, dithering, encoder all reused)
 - Customizable settings:
   - Device presets (Xteink X4, X3, custom dimensions)
   - Monitor DPI for accurate preview scaling
@@ -86,6 +102,14 @@ node index.js convert book.epub -o book.xtc -c settings.json
 # mirroring their structure under the output directory)
 node index.js convert ./epubs/ -o ./output/ -c settings.json
 
+# Convert a Markdown file (auto-detected by extension; goes through
+# the Markdown optimizer + an in-memory EPUB before the XTC encoder)
+node index.js convert README.md -o README.xtc -c settings.json
+
+# Mixed directories work too — both *.epub and *.md / *.markdown
+# are picked up recursively
+node index.js convert ./docs/ -o ./out/ -c settings.json
+
 # Use XTCH format (2-bit grayscale)
 node index.js convert book.epub -f xtch -c settings.json
 
@@ -97,6 +121,13 @@ node index.js optimize ./epubs/ -o ./output/ -c settings.json
 
 # Optimize recursively (set "recursive": true in settings.json optimizer section)
 node index.js optimize ./library/ -o ./optimized/ -c settings.json
+
+# Markdown-only utilities (do not require a font / WASM):
+#   - optimize-md: write a normalised .md file
+#   - md-to-epub: write the intermediate EPUB to disk (handy for debugging
+#                 or for piping back through `optimize` to re-strip CSS)
+node index.js optimize-md README.md -o README_optimized.md
+node index.js md-to-epub README.md -o README.epub
 ```
 
 Optimization options are configured in `settings.json` under the `optimizer` section:
@@ -124,9 +155,48 @@ Example `settings.json`:
     "recursive": false,
     "include": "*.epub",
     "exclude": null
+  },
+  "markdown": {
+    "wrapCodeAt": 58,
+    "tabSize": 2,
+    "flattenHeadingsAbove": 4,
+    "transposeWideTables": true,
+    "wideTableThreshold": 32,
+    "syntaxHighlight": true,
+    "highlightStyle": "bold-italic",
+    "dropEmoji": true,
+    "smartTypography": true,
+    "taskListGlyphs": true,
+    "flattenAlerts": true,
+    "stripDangerousHtml": true,
+    "frontmatterAuthorField": "author",
+    "splitChaptersAt": 1,
+    "injectCodeCss": true
   }
 }
 ```
+
+### Markdown Optimizer options
+
+All settings live under the `markdown` block in `settings.json`:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `wrapCodeAt` | int | 58 | Soft-wrap code-fence lines at this column on word/operator boundaries (0 disables). |
+| `tabSize` | int | 2 | Number of spaces a tab expands to inside code fences. |
+| `flattenHeadingsAbove` | int | 4 | Headings deeper than this become `**bold paragraphs**`. |
+| `transposeWideTables` | bool | true | Detect tables wider than `wideTableThreshold` and rewrite as definition lists. |
+| `wideTableThreshold` | int | 32 | Char-count threshold for table transposition. |
+| `syntaxHighlight` | bool | true | Run `highlight.js` on fenced code blocks. |
+| `highlightStyle` | str | "bold-italic" | "bold-italic" emits `<b>`/`<i>`/`<u>` only; "none" disables highlight. |
+| `dropEmoji` | bool | true | Strip emoji codepoints (no colour glyphs on e-ink). |
+| `smartTypography` | bool | true | Normalise smart quotes / em-dash / ellipsis to ASCII. |
+| `taskListGlyphs` | bool | true | Rewrite `- [ ]` / `- [x]` to ☐ / ☑. |
+| `flattenAlerts` | bool | true | Flatten GFM `> [!NOTE]` admonitions to `> **Note:** …`. |
+| `stripDangerousHtml` | bool | true | Remove `<script>`, `<iframe>`, `<details>`, `<video>`, … blocks. |
+| `frontmatterAuthorField` | str | "author" | Frontmatter key to read as document author. |
+| `splitChaptersAt` | int | 1 | Heading level used as chapter boundaries in the intermediate EPUB. |
+| `injectCodeCss` | bool | true | Inject the e-paper code-friendly CSS (monospace `<pre>`, soft-wrap, page breaks). |
 
 ## XTC/XTCH Format
 
@@ -183,19 +253,25 @@ Then open http://localhost:8000 in your browser.
 │   ├── index.html              # Main HTML structure
 │   ├── style.css               # Application styles
 │   ├── app.js                  # Main application logic
+│   ├── markdown-to-epub.js     # Browser-side Markdown → EPUB shim
 │   ├── crengine.js             # CREngine WASM loader
 │   ├── crengine.wasm           # CREngine binary (CoolReader engine)
 │   └── dither-worker.js        # Web Worker for Floyd-Steinberg dithering
 ├── cli/                        # Node.js CLI tool
-│   ├── index.js                # CLI entry point
-│   ├── converter.js            # WASM integration and conversion logic
+│   ├── index.js                # CLI entry point (convert / optimize / md-to-epub / optimize-md)
+│   ├── converter.js            # WASM integration and conversion logic (accepts Buffer or path)
 │   ├── encoder.js              # XTG/XTH/XTC format encoding
 │   ├── dither.js               # Floyd-Steinberg dithering
 │   ├── optimizer.js            # EPUB optimizer for e-paper
+│   ├── markdown.js             # Markdown optimizer + HTML renderer
+│   ├── md-to-epub.js           # Build in-memory EPUB 3 from Markdown
+│   ├── image-utils.js          # Shared image processing (used by optimizer + md-to-epub)
 │   ├── settings.js             # Settings management
+│   ├── test/                   # node --test suites
 │   └── package.json            # CLI dependencies
 ├── docs/
-│   └── xtc-format-spec.md      # XTC format specification
+│   ├── xtc-format-spec.md      # XTC format specification
+│   └── markdown-pipeline.md    # Markdown → XTC pipeline overview
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml          # GitHub Pages deployment
@@ -207,6 +283,7 @@ Then open http://localhost:8000 in your browser.
 
 ### Web App
 - [JSZip](https://stuk.github.io/jszip/) - ZIP file handling (loaded from CDN)
+- [markdown-it](https://github.com/markdown-it/markdown-it) - Markdown parser (loaded from CDN, used when a `.md` file is dropped)
 - CREngine - EPUB rendering (bundled as WASM, see [docs/building-crengine-wasm.md](docs/building-crengine-wasm.md) for provenance and rebuild notes)
 - Google Fonts (loaded on demand): Literata, Lora, Merriweather, Source Serif 4, Noto Serif, Noto Sans, Open Sans, Roboto, EB Garamond, Crimson Pro
 - Custom TTF/OTF font upload also supported
@@ -215,8 +292,11 @@ Then open http://localhost:8000 in your browser.
 - Node.js 18+
 - [Commander](https://github.com/tj/commander.js) - CLI framework
 - [JSZip](https://stuk.github.io/jszip/) - ZIP file handling
-- [sharp](https://sharp.pixelplumbing.com/) - Image processing (optimizer)
+- [sharp](https://sharp.pixelplumbing.com/) - Image processing (optimizer, Markdown image embedding)
 - [minimatch](https://github.com/isaacs/minimatch) - Glob pattern matching (optimizer)
+- [markdown-it](https://github.com/markdown-it/markdown-it) + plugins (`-anchor`, `-footnote`, `-task-lists`, `-deflist`) — Markdown parsing
+- [highlight.js](https://highlightjs.org/) — syntax highlighting (rendered monochrome for e-ink)
+- [gray-matter](https://github.com/jonschlinkert/gray-matter) — YAML frontmatter parsing
 - CREngine WASM (shared with web app)
 
 ## Browser Support

@@ -13,15 +13,15 @@
             <!-- Book Info -->
             <div class="book-info" id="bookInfo">
                 <div class="title" id="bookTitle">No book loaded</div>
-                <div class="author" id="bookAuthor">Drop an EPUB file to start</div>
+                <div class="author" id="bookAuthor">Drop an EPUB or Markdown file to start</div>
             </div>
 
             <!-- Drop Zone -->
             <div class="drop-zone" id="dropZone">
                 <div class="drop-zone-icon">+</div>
-                <div class="drop-zone-text">Drop EPUB files here or click to browse</div>
+                <div class="drop-zone-text">Drop EPUB or Markdown files here or click to browse</div>
             </div>
-            <input type="file" id="fileInput" accept=".epub" multiple>
+            <input type="file" id="fileInput" accept=".epub,.md,.markdown" multiple>
 
             <!-- File List -->
             <div class="file-list" id="fileList"></div>
@@ -386,6 +386,15 @@
 
     <!-- JSZip for batch export -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+    <!-- markdown-it for the Markdown ingestion path (with SRI to satisfy CodeQL/CSP) -->
+    <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"
+            integrity="sha384-wLhprpjsmjc/XYIcF+LpMxd8yS1gss6jhevOp6F6zhiIoFK6AmHtm4bGKtehTani"
+            crossorigin="anonymous"
+            referrerpolicy="no-referrer"></script>
+
+    <!-- Markdown → EPUB shim (used transparently when a .md file is dropped) -->
+    <script src="markdown-to-epub.js"></script>
 
     <!-- CREngine WASM -->
     <script src="crengine.js"></script>
